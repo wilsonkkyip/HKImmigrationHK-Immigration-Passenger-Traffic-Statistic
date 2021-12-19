@@ -1,0 +1,170 @@
+---
+title: "HK Immigration Passenger Traffic"
+output: 
+    rmarkdown::github_document:
+        html_preview: false
+---
+
+## Data Source
+
+On each day, the [Hong Kong Immigration Department](https://immd.gov.hk/eng/index.html) will update the passenger traffic at different control point of the previous day. For example, the passenger traffic statistics on `2021-12-16` can be found from the url below.
+
+```
+https://www.immd.gov.hk/eng/stat_20211216.html
+```
+
+By changing the date in the above url, the passenger traffic data of a particular date can be found.
+
+## Data Extraction With Python
+
+The function below takes a date value and return the "Passenger Traffic Statistic" on that day from the Immigration Department website. 
+
+```{python python_function}
+import requests
+from bs4 import BeautifulSoup as bs
+import pandas as pd
+from datetime import datetime
+from datetime import date
+from datetime import timedelta
+import re
+import matplotlib.pyplot as plt
+
+def getImmigrationStatDaily(d):
+    url = "https://www.immd.gov.hk/eng/stat_{}.html".format(d.strftime("%Y%m%d"))
+    response = requests.get(url)
+    soup = bs(response.content, "html.parser")
+    tr = soup.select("tbody tr")
+    pattern = re.compile(r"(Arrival|Departure)")
+    rows = list()
+    for i in range(len(tr)):
+        td = tr[i].select("td")
+        hasHeader = list(map(lambda y: "headers" in set(y.attrs.keys()), td))
+        td = [td[j] for j, x in enumerate(hasHeader) if x]
+        headers = [cell.get_attribute_list("headers")[0] for cell in td]
+        value = [cell.text for cell in td]
+        value = [int(x.replace(",", "")) if bool(pattern.search(headers[i])) else x for i, x in enumerate(value)]
+        rows.append(dict(zip(headers, value)))
+    result = pd.DataFrame(rows)
+    result[["Date"]] = d
+    return(result)
+
+df = getImmigrationStatDaily(date(2021,12,16))
+```
+
+```{r python_function_example, echo = FALSE}
+knitr::kable(reticulate::py$df)
+```
+
+
+## Data Extraction With R 
+
+The function below takes a date value and return the "Passenger Traffic Statistic" on that day from the Immigration Department website. 
+
+```{r r_function}
+getImmigrationStatDaily <- function(d) {
+  url <- sprintf("https://www.immd.gov.hk/eng/stat_%s.html", format(d, "%Y%m%d"))
+  response <- httr::content(httr::GET(url), encoding = "UTF-8")
+  tr <- rvest::html_nodes(response, "tbody tr")
+  result <- as.data.frame(t(sapply(tr, function(x) {
+    y <- rvest::html_nodes(x, "td")
+    y <- y[grep("headers", y)]
+    r <- rvest::html_text(y)
+    names(r) <- rvest::html_attr(y, "headers")
+    return(r)
+  })))
+  cols <- grep("(Arrival|Departure)$", names(result))
+  result[, cols] <- as.data.frame(lapply(result[, cols], function(x) as.numeric(gsub("[^0-9]", "", x))))
+  if (ncol(result) > 1)	result$Date <- d else stop(paste0("No Data on ", d))
+  return(result)
+}
+
+df <- getImmigrationStatDaily(as.Date("2021-12-16"))
+```
+
+```{r r_function_example}
+knitr::kable(df)
+```
+
+## Airport Passenger Traffic Using Python
+
+Below shows an example of extracting the airport passenger traffic using Python. 
+
+```{python python_airport_extraction}
+startdate = date(2020,7,1)
+enddate = date.today() - timedelta(days = 1)
+dates = [startdate + timedelta(days = i) for i in range((enddate - startdate).days + 1)]
+dfs = [getImmigrationStatDaily(x) for x in dates]
+df = pd.concat(dfs).reset_index(drop = True)
+```
+
+```{python python_airport_plotdf}
+airportTraffic = df[(df["Date"] >= dates[0]) & (df["Control_Point"] == "Airport")][["Hong_Kong_Residents_Arrival", "Hong_Kong_Residents_Departure"]]
+airportTraffic = airportTraffic.reset_index(drop = True)
+airportTraffic["NetChange"] = airportTraffic["Hong_Kong_Residents_Arrival"] - airportTraffic["Hong_Kong_Residents_Departure"]
+
+yearMonths = [str(x.year) + "-" + str(x.month).zfill(2) for x in dates]
+airportTrafficMonthly = airportTraffic.groupby(yearMonths).sum()
+airportTrafficMonthly["Month"] = list(airportTrafficMonthly.index)
+airportTrafficMonthly = airportTrafficMonthly.reset_index(drop=True)
+airportTrafficMonthly = airportTrafficMonthly[["Month", "Hong_Kong_Residents_Arrival", "Hong_Kong_Residents_Departure", "NetChange"]]
+Total = airportTrafficMonthly.sum(numeric_only=True).append(pd.Series("Total"))
+Total.index = list(Total.index)[0:3] + ["Month"]
+outdf = airportTrafficMonthly.append(Total, ignore_index=True)
+```
+
+```{r python_airport_plot, echo = FALSE}
+knitr::kable(reticulate::py$outdf)
+```
+
+```{python python_airport_linechart}
+plt.plot(list(airportTrafficMonthly["Month"]), airportTrafficMonthly["Hong_Kong_Residents_Arrival"], label = "Arrival");
+plt.plot(list(airportTrafficMonthly["Month"]), [-x for x in airportTrafficMonthly["Hong_Kong_Residents_Departure"]], label = "Departure");
+plt.plot(list(airportTrafficMonthly["Month"]), airportTrafficMonthly["NetChange"], label = "Net Change");
+plt.xticks(list(airportTrafficMonthly["Month"]), list(airportTrafficMonthly["Month"]), rotation='vertical');
+plt.legend(loc = "lower center", bbox_to_anchor=(0.5, -0.4), ncol = 3);
+plt.title("HK Passenger Traffer (Airport)");
+plt.xlabel("Month");
+plt.ylabel("Count");
+plt.grid(axis = "y", linestyle='--', color = "#7c7c7c");
+plt.axhline(0, color='k');
+plt.tight_layout();
+plt.show()
+```
+
+## Airport Passenger Traffic Using R
+
+Below shows an example of extracting the airport passenger traffic using R. 
+
+```{r r_airport_extraction}
+dates <- seq(as.Date("2020-07-01"), Sys.Date() - 1, by = 1)
+df <- plyr::rbind.fill(lapply(dates, getImmigrationStatDaily))
+```
+
+```{r r_airport_plotdf}
+airportTraffic <- dplyr::filter(df, df$Control_Point == "Airport")[, c("Hong_Kong_Residents_Arrival", "Hong_Kong_Residents_Departure")]
+airportTraffic$NetChange <- airportTraffic$Hong_Kong_Residents_Arrival - airportTraffic$Hong_Kong_Residents_Departure
+
+yearMonths <- format(dates, "%Y-%m")
+airportTrafficMonthly <- aggregate(airportTraffic, list(Month = yearMonths), sum)
+knitr::kable(rbind(airportTrafficMonthly, as.data.frame(c(list(Month = "Total"), colSums(airportTrafficMonthly[, -1])))))
+```
+
+```{r r_airport_plot}
+library(ggplot2)
+
+plotdf <- airportTrafficMonthly
+names(plotdf) <- c("Month", "Arrival", "Departure", "NetChange")
+plotdf$Departure <- -plotdf$Departure
+plotdf <- tidyr::gather(plotdf, Type, Count, Arrival:NetChange)
+
+ggplot(data = plotdf, aes(x = Month, y = Count, group = Type)) + 
+    geom_line(aes(color = Type)) + 
+    geom_point(aes(color = Type)) + 
+    ggtitle("HK Passenger Traffer (Airport)") + 
+    theme(
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        plot.title = element_text(hjust=0.5)
+    )
+```
+
